@@ -34,4 +34,9 @@ Control buzzer → GPIO 4
 ## 🧭 Sensor de orientación (tipo SW, como un botón)
 Sensor nivel → GPIO 5 (entrada digital con pull-down de 3 kΩ)
 
+## 📺 Pantalla OLED SSD1306 0.96" I2C (128x64 px)
+SDA → GPIO 18
+
+SCL → GPIO 23
+
 >Verificar los pines con el modelo de ESP32
