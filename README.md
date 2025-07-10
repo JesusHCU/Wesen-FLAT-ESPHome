@@ -30,7 +30,7 @@ si botón 3 presionado:
   si temp_deseada > temp_max:
     temp_deseada = temp_min
 
-🔁 LÓGICA de TERMOSTATOS (solo si termo_encendido)
+🔁 LÓGICA de TERMOSTATOS (sólo si termo_encendido)
 si termo_encendido:
   si temperatura_tanque1 < temp_deseada:
     si modo_power == DOUBLE:
@@ -39,3 +39,9 @@ si termo_encendido:
       activar rele1
   sino:
     desactivar rele1 y rele3
+
+  si temperatura_tanque2 < temp_deseada:
+    activar rele2
+  sino:
+    desactivar rele2
+    
