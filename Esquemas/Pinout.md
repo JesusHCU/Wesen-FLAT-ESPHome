@@ -8,11 +8,11 @@ Rele2 → GPIO 21
 Rele3 → GPIO 19
 
 ## 🎛️ Entradas de botones (GPIO - entrada digital con pull-down)
-Botón UP → GPIO 32
+Botón On/Off → GPIO 32
 
-Botón DOWN → GPIO 33
+Botón Power → GPIO 33
 
-Botón OK → GPIO 25
+Botón Temp → GPIO 25
 
 ## 🔆 Salidas a LEDs (Anodo común con resistencia de 100 Ω a +5V)
 LED Rojo 1 (SINGLE Power) → GPIO 26
