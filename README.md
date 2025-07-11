@@ -1,7 +1,28 @@
 # Wesen-FLAT-ESPHome
-Termostato para termo Wesen Flat utilizando ESPHome
+Termostato para termo Wesen Flat utilizando ESPHome. 
 
 El objetivo del proyecto es hacer inteligente el termo para poder controlarlo desde Home Assistant, aprovechando parte de la electrónica del mismo termo.
+
+EL termo tiene 2 placas electrónicas, una para la parte de "Potencia" y otra para la parte de "Control"
+
+## Etapa de Potencia
+- Transformador y estabilizador de 5v
+- 3 Relés con su circuito de activación (Resistencia, transistor y diodo)
+- Conector de 5 pines para la etapa de control
+- Salidas de 230v para las resistencias.
+- Entrada de 230V general
+
+# Etapa de Control
+
+Conector de 5 pines. 
+-  1- +5v
+-  2- GND
+-  3- Relé 1
+-  4- Relé 2
+-  5- Relé 3
+Conector de 2 Pines Cable Negro: Sonda NTC
+Conector de 2 Pines Cable Rojo:  Sonda NTC
+
 
 ## Peudocódigo estructurado para las funciones que queremos:
 
