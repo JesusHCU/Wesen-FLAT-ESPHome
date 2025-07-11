@@ -33,7 +33,7 @@ EL termo tiene 2 placas electrónicas, una para la parte de "Potencia" y otra pa
   width="70%" height="auto">
 
 
-## Peudocódigo estructurado para las funciones que queremos:
+## Pseudocódigo estructurado para las funciones que queremos:
 
 🔧 Variables globales:
 ~~~
