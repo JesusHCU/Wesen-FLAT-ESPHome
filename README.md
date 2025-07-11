@@ -1,4 +1,8 @@
 # Wesen-FLAT-ESPHome
+<img 
+  src="https://github.com/JesusHCU/Wesen-FLAT-ESPHome/blob/main/Images/wesen_logo.webp"
+  alt="Logo Wesen" 
+  width="5%" height="auto">
 Termostato para termo Wesen Flat utilizando ESPHome. 
 
 El objetivo del proyecto es hacer inteligente el termo para poder controlarlo desde Home Assistant, aprovechando parte de la electrónica del mismo termo.
