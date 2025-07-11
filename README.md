@@ -13,7 +13,12 @@ EL termo tiene 2 placas electrónicas, una para la parte de "Potencia" y otra pa
 - Entrada de 230V general
 
 # Etapa de Control
+<img 
+  src="https://github.com/JesusHCU/Wesen-FLAT-ESPHome/blob/main/Images/Placa%20Control%20Original.jpg" 
+  alt="Cto Original" 
+  width="70%" height="auto">
 
+https://github.com/JesusHCU/Wesen-FLAT-ESPHome/blob/main/Images/Placa%20Control%20Original.jpg](https://github.com/JesusHCU/Wesen-FLAT-ESPHome/blob/main/Images/Cto%20Original.jpg
 Conector de 5 pines. 
 -  1- +5v
 -  2- GND
@@ -22,6 +27,11 @@ Conector de 5 pines.
 -  5- Relé 3
 Conector de 2 Pines Cable Negro: Sonda NTC
 Conector de 2 Pines Cable Rojo:  Sonda NTC
+
+<img   
+  src="https://github.com/JesusHCU/Wesen-FLAT-ESPHome/blob/main/Images/Cto%20Original.jpg" 
+  alt="Pistas de la placa Original" 
+  width="70%" height="auto">
 
 
 ## Peudocódigo estructurado para las funciones que queremos:
