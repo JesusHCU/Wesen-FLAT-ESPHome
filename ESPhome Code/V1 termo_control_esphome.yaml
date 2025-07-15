@@ -1,0 +1,250 @@
+substitutions:
+  name: "termo-inox"
+  friendlyname: "Termo Inox"
+
+  PinRele1: GPIO22
+  PinRele2: GPIO21
+  PinRele3: GPIO19
+
+  PinDallas: GPIO4
+
+  PinBtnOnOff: GPIO32
+  PinBtnPower: GPIO33
+  PinBtnTemp: GPIO25
+
+  PinLed_SINGLE_POWER: GPIO26
+  PinLed_DOUBLE_POWER: GPIO27
+  PinLed_Verde: GPIO14
+
+  PinI2C_SDA: GPIO18
+  PinI2C_SCL: GPIO23
+
+  PinBuzzer: GPIO15
+
+  static_ip_address: "192.168.0.186"
+  gateway_ip_address: "192.168.0.1"
+  subnet_mask: "255.255.252.0"
+
+globals:
+  - id: termo_on
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: modo_power
+    type: int  # 0 = SINGLE, 1 = DOUBLE
+    restore_value: yes
+    initial_value: '0'
+    
+  - id: temperatura_objetivo
+    type: float
+    restore_value: yes
+    initial_value: '45.0'
+  - id: temperatura_objetivo_2
+    type: float
+    restore_value: yes
+    initial_value: '50.0'
+  
+  - id: temperatura_minima
+    type: float
+    restore_value: yes
+    initial_value: '25.0'
+  - id: temperatura_maxima
+    type: float
+    restore_value: yes
+    initial_value: '70.0'
+
+esphome:
+  name: ${name}
+  platform: ESP32
+  board: esp32dev
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+    - ssid: !secret wifi_ssid2
+      password: !secret wifi_password2
+  manual_ip:
+    static_ip: ${static_ip_address}
+    gateway: ${gateway_ip_address}
+    subnet: ${subnet_mask}
+  ap:
+    ssid: "ESP $(name) AP"
+    password: !secret wifi_password
+
+captive_portal:
+logger:
+api:
+  encryption:
+    key: "je4O5QAvum5ZGhkYjHPF7i/kJkORBhJXU2/8PF93ArRF"
+ota:
+  password: !secret ota_password
+
+mqtt:
+  broker: 192.168.0.200
+  username: !secret usermqtt
+  password: !secret passmqtt
+
+i2c:
+  sda: ${PinI2C_SDA}
+  scl: ${PinI2C_SCL}
+  scan: true
+
+one_wire:
+  - platform: gpio
+    pin:
+      number: ${PinDallas}
+
+output:
+  - platform: gpio
+    pin: ${PinRele1}
+    id: rele1
+    inverted: false
+  - platform: gpio
+    pin: ${PinRele2}
+    id: rele2
+    inverted: false
+  - platform: gpio
+    pin: ${PinRele3}
+    id: rele3
+    inverted: false
+  - platform: gpio
+    pin: ${PinBuzzer}
+    id: buzzer
+    inverted: false
+  - platform: gpio
+    pin: ${PinLed_Verde}
+    id: led_verde
+    inverted: false
+  - platform: gpio
+    pin: ${PinLed_SINGLE_POWER}
+    id: led_single
+    inverted: false
+  - platform: gpio
+    pin: ${PinLed_DOUBLE_POWER}
+    id: led_double
+    inverted: false
+
+sensor:
+  - platform: dallas_temp
+    address: 0x0f3c01b55693b228
+    name: "${friendlyname} - Temp1"
+    id: temp1
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: 5s
+  - platform: dallas_temp
+    address: 0xe63c01d075a77528
+    name: "${friendlyname} - Temp2"
+    id: temp2
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: 5s
+  - platform: wifi_signal
+    name: "${friendlyname} - Señal WiFi"
+    id: wifi_signal
+    update_interval: 60s
+
+binary_sensor:
+  - platform: gpio
+    pin: ${PinBtnOnOff}
+    name: "${friendlyname} - Boton ON/OFF"
+    on_press:
+      then:
+        - lambda: 'id(termo_on) = !id(termo_on);'
+  - platform: gpio
+    pin: ${PinBtnPower}
+    name: "${friendlyname} - Boton Power Mode"
+    on_press:
+      then:
+        - lambda: 'id(modo_power) = (id(modo_power) == 0) ? 1 : 0;'
+  - platform: gpio
+    pin: ${PinBtnTemp}
+    name: "${friendlyname} - Boton Temperatura"
+    on_press:
+      then:
+        - lambda: |-
+            id(temperatura_objetivo) += 5.0;
+            if (id(temperatura_objetivo) > temperatura_maxima) {
+              id(temperatura_objetivo) = temperatura_minima;
+            }
+
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          // LEDs
+          id(led_verde).turn_on(id(termo_on));
+          id(led_single).turn_on(id(termo_on) && id(modo_power) == 0);
+          id(led_double).turn_on(id(termo_on) && id(modo_power) == 1);
+
+          // Termostato y relés
+          if (id(termo_on)) {
+            if (id(modo_power) == 0) {
+              id(rele1).turn_on(id(temp1).state < id(temperatura_objetivo) && id(temp1).state < id(temperatura_maxima));
+              id(rele2).turn_on(id(temp2).state < id(temperatura_objetivo_2) && id(temp2).state < id(temperatura_maxima));
+              id(rele3).turn_off();
+            } else {
+              id(rele1).turn_on(id(temp1).state < id(temperatura_objetivo) && id(temp1).state < id(temperatura_maxima));
+              id(rele3).turn_on(id(temp1).state < id(temperatura_objetivo) && id(temp1).state < id(temperatura_maxima));
+              id(rele2).turn_off();
+            }
+          } else {
+            id(rele1).turn_off();
+            id(rele2).turn_off();
+            id(rele3).turn_off();
+          }
+
+number:
+  - platform: template
+    name: "${friendlyname} - Temp. Objetivo T1"
+    id: temp_obj
+    min_value: temperatura_minima
+    max_value: temperatura_maxima
+    step: 5.0
+    lambda: 'return id(temperatura_objetivo);'
+    set_action:
+      lambda: 'id(temperatura_objetivo) = x;'
+    update_interval: 10s
+  - platform: template
+    name: "${friendlyname} - Temp. Objetivo T2"
+    id: temp_obj2
+    min_value: temperatura_minima
+    max_value: temperatura_maxima
+    step: 5.0
+    lambda: 'return id(temperatura_objetivo_2);'
+    set_action:
+      lambda: 'id(temperatura_objetivo_2) = x;'
+    update_interval: 10s
+  - platform: template
+    name: "${friendlyname} - Temp Máxima"
+    id: temp_max
+    min_value: temperatura_minima
+    max_value: temperatura_maxima
+    step: 1.0
+    lambda: 'return id(temperatura_maxima);'
+    set_action:
+      lambda: 'id(temperatura_maxima) = x;'
+    update_interval: 10s
+
+font:
+  - file: "fonts/OpenSans-Regular.ttf"
+    id: font1
+    size: 18
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    lambda: |-
+      it.printf(0, 0, id(font1), "T1: %.1f°C", id(temp1).state);
+      it.printf(0, 20, id(font1), "T2: %.1f°C", id(temp2).state);
+      it.printf(0, 40, id(font1), "OBJ: %.0f°C", id(temperatura_objetivo));
+      int signal = id(wifi_signal).state;
+      if (signal > -60) {
+        it.print(100, 0, id(font1), "📶");
+      } else if (signal > -70) {
+        it.print(100, 0, id(font1), "📶.");
+      } else {
+        it.print(100, 0, id(font1), "📶..");
+      }
