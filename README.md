@@ -36,6 +36,7 @@ EL termo tiene 2 placas electrónicas, una para la parte de "Potencia" y otra pa
 
 Este sistema utiliza el componente `climate.thermostat` de ESPHome para controlar dos tanques de agua de forma independiente, 
 integrando un modo TURBO (Rele3), botones físicos y una interfaz visual OLED.
+
 ---
 
 ### ⚙️ Variables globales
