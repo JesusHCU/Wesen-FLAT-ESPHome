@@ -31,7 +31,7 @@ substitutions:
 
 globals:
   - id: power_state
-    type: int  # 0=AllOff,1=T1,2=T1+T2,3=Turbo,4=AllOff
+    type: int  # 0=AllOff,1=T1,2=T1+T2,3=T1+T2+Turbo
     restore_value: yes
     initial_value: '0'
   - id: active_thermo
@@ -53,7 +53,7 @@ globals:
   - id: temp_max
     type: float
     restore_value: yes
-    initial_value: '75.0'
+    initial_value: '60.0'
 
 esphome:
   name: ${name}
@@ -71,7 +71,7 @@ wifi:
     gateway: ${gateway_ip_address}
     subnet: ${subnet_mask}
   ap:
-    ssid: "ESP Fallback AP"
+    ssid: "ESP TermoWesen AP"
     password: !secret wifi_password
 
 captive_portal:
