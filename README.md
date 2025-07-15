@@ -32,54 +32,106 @@ EL termo tiene 2 placas electrónicas, una para la parte de "Potencia" y otra pa
   width="70%" height="auto">
 
 
-## Pseudocódigo estructurado para las funciones que queremos:
+## 🔧 Lógica estructurada del sistema de control de termo con ESPHome
 
-🔧 Variables globales:
-~~~
-bool termo_encendido = false
-enum modo_power = SINGLE // puede ser SINGLE o DOUBLE
-float temp_deseada = 35.0 // rango 35 °C–75 °C en pasos de 5
-const float temp_min = 35.0
-const float temp_max = 75.0
-const float paso_temp = 5.0
+Este sistema utiliza el componente `climate.thermostat` de ESPHome para controlar dos tanques de agua de forma independiente, 
+integrando un modo TURBO (Rele3), botones físicos y una interfaz visual OLED.
+---
+
+### ⚙️ Variables globales
 ~~~
 
-🔘 BOTÓN 1: ON/OFF (Toggle)
-~~~
-si botón 1 presionado:
-  termo_encendido = !termo_encendido
+enum PowerState {
+  OFF,
+  T1_ON,
+  T1_T2_ON,
+  T1_T2_TURBO
+};
+
+PowerState power_state = OFF
+int termostato_seleccionado = 1 // 1 = T1, 2 = T2
+float temp_min = 35.0
+float temp_max = 75.0
+float paso_temp = 5.0
 ~~~
 
-🔘 BOTÓN 2: Cambiar modo potencia
+### 🔘 BOTÓN 1: Encendido / Ciclo de estado
 ~~~
-si botón 2 presionado:
-  si modo_power == SINGLE:
-    modo_power = DOUBLE
+// Ciclo de estado entre OFF → T1_ON → T1_T2_ON → T1_T2_TURBO → OFF
+si botón1_presionado:
+  si power_state == OFF:
+    power_state = T1_ON
+  sino si power_state == T1_ON:
+    power_state = T1_T2_ON
+  sino si power_state == T1_T2_ON:
+    power_state = T1_T2_TURBO
   sino:
-    modo_power = SINGLE
+    power_state = OFF
 ~~~
 
-🔘 BOTÓN 3: Subir temperatura
+### 🔘 BOTÓN 2: Selección de termostato (T1 o T2)
 ~~~
-si botón 3 presionado:
-  temp_deseada += paso_temp
-  si temp_deseada > temp_max:
-    temp_deseada = temp_min
+si botón2_presionado:
+  termostato_seleccionado = (termostato_seleccionado == 1) ? 2 : 1
 ~~~
-🔁 LÓGICA de TERMOSTATOS (sólo si termo_encendido)
-~~~
-si termo_encendido:
-  si temperatura_tanque1 < temp_deseada:
-    si modo_power == DOUBLE:
-      activar rele1 y rele3
-    sino:
-      activar rele1
-  sino:
-    desactivar rele1 y rele3
 
-  si temperatura_tanque2 < temp_deseada:
-    activar rele2
-  sino:
-    desactivar rele2
-~~~ 
+### 🔘 BOTÓN 3: Subir temperatura del termostato seleccionado
 ~~~
+si botón3_presionado:
+  si termostato_seleccionado == 1:
+    T1.target += paso_temp
+    si T1.target > temp_max:
+      T1.target = temp_min
+  sino:
+    T2.target += paso_temp
+    si T2.target > temp_max:
+      T2.target = temp_min
+~~~
+
+### 🔁 Lógica de activación de relés (implícita en climate.thermostat)
+~~~
+- T1 siempre activa rele1 cuando necesita calentar.
+  Si el modo es T1_T2_TURBO, también se activa rele3 con T1.
+- T2 activa rele2 de forma independiente.
+  En estado OFF, todos los relés se apagan.
+~~~
+
+### 💡 Display OLED
+~~~
+El display muestra:
+- Temperatura actual y objetivo de T1 y T2
+- Indicador de tanque seleccionado
+- Icono de estado Wi-Fi (con barras como en un móvil)
+~~~
+
+### 💬 Control desde Home Assistant
+~~~
+- Ambos termostatos pueden controlarse desde la interfaz de HA.
+- El modo TURBO se puede activar desde HA ajustando la variable power_state a T1_T2_TURBO.
+~~~
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
