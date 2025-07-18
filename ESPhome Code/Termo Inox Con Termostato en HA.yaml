@@ -1,0 +1,752 @@
+# =====================================================================
+# === SUSTITUCIONES (VARIABLES GLOBALES) ==============================
+# =====================================================================
+# Define aquí valores que usarás en varias partes del código.
+# Facilita hacer cambios en un solo lugar y mejora la legibilidad.
+substitutions:
+  # --- Nombres del dispositivo ---
+  devicename: "termo-inox"      # Nombre único del dispositivo en la red
+  friendlyname: "Termo Inox"    # Nombre amigable para Home Assistant
+
+  # --- Asignación de Pines ESP32 ---
+  # Es una buena práctica definir los pines aquí para fácil modificación.
+  PinRele1: GPIO22              # Relé para el Tanque 1
+  PinRele2: GPIO21              # Relé para el Tanque 2
+  PinRele3: GPIO19              # Relé para el modo TURBO (Calentador adicional)
+
+  PinDallas: GPIO4              # Pin para el bus OneWire (sensores DS18B20)
+
+  PinBtnOnOff: GPIO32           # Botón principal: Encendido / Ciclo de modos
+  PinBtnMode: GPIO33            # Botón de selección: Cambia entre Termostato 1 y Termostato 2 en la pantalla
+  PinBtnTmp: GPIO25             # Botón de ajuste: Sube la temperatura objetivo
+
+  PinOrientacion: GPIO17        # Sensor de Inclinación (para rotar el display) - ¡PIN ACTUALIZADO!
+  PinLed1: GPIO26               # LED indicador: Tanque 1 activo (calentando)
+  PinLed2: GPIO27               # LED indicador: Tanque 2 activo (calentando)
+  PinLedTurbo: GPIO14           # LED indicador: Modo TURBO activo
+
+  PinI2C_SCL: GPIO23            # Pin SCL para el bus I2C (pantalla OLED)
+  PinI2C_SDA: GPIO18            # Pin SDA para el bus I2C (pantalla OLED)
+
+  PinBuzzer: GPIO16             # Salida para el buzzer (feedback sonoro) - ¡PIN ACTUALIZADO!
+
+  # --- Configuración de Red ---
+  # La IP estática del dispositivo para una conexión fiable.
+  static_ip_address: "192.168.0.186"
+  gateway_ip_address: "192.168.0.1"
+  subnet_mask: "255.255.252.0" # Asegúrate de que esta subred sea correcta para tu red.
+
+# =====================================================================
+# === VARIABLES GLOBALES (estados persistentes) =======================
+# =====================================================================
+# 'globals' se usa para variables que deben mantener su estado
+# incluso después de un reinicio del ESP. Son cruciales para la persistencia.
+globals:
+  - id: power_state
+    type: int   # 0=AllOff, 1=T1 ON, 2=T1+T2 ON, 3=T1+T2+TURBO
+    restore_value: yes # Mantiene el último valor conocido tras un reinicio del ESP
+    initial_value: '0' # Valor inicial si no hay valor restaurado (arranque inicial)
+  - id: active_thermo
+    type: int   # 1 = Termo1, 2 = Termo2 (Indica qué termostato se está visualizando/ajustando en la pantalla)
+    restore_value: yes
+    initial_value: '1' # Inicia mostrando el Termo 1
+  - id: target_t1
+    type: float
+    restore_value: yes
+    initial_value: '45.0' # Temperatura objetivo inicial para Tanque 1
+  - id: target_t2
+    type: float
+    restore_value: yes
+    initial_value: '50.0' # Temperatura objetivo inicial para Tanque 2
+  - id: temp_min
+    type: float
+    restore_value: yes
+    initial_value: '25.0' # Límite inferior para la temperatura objetivo
+  - id: temp_max
+    type: float
+    restore_value: yes
+    initial_value: '60.0' # Límite superior para la temperatura objetivo
+  - id: display_rotated # Nuevo global para controlar la rotación de la pantalla
+    type: bool
+    restore_value: yes
+    initial_value: 'false' # Por defecto, la pantalla no está rotada
+
+# =====================================================================
+# === CONFIGURACIÓN BASE DEL ESP ======================================
+# =====================================================================
+esphome:
+  name: ${devicename}         # Usa la sustitución 'devicename'
+  friendly_name: ${friendlyname} # Usa la sustitución 'friendlyname'  
+  name_add_mac_suffix: false # Con name_add_mac_suffix en 'false', el nombre será exactamente "termo-inox".
+
+  # Evento que se ejecuta al arrancar el ESP. Es crucial para inicializar estados
+  # y asegurar que el hardware se sincronice con las variables globales restauradas.
+  on_boot:
+    priority: 600 # Asegura que se ejecute después de que todos los componentes estén inicializados
+    then:
+      - script.execute: rele_led_manager # Llama al script para inicializar relés y LEDs
+      - lambda: |-
+          // Publicar el estado de los termostatos a Home Assistant para que estén sincronizados.
+          id(thermo1).publish_state();
+          id(thermo2).publish_state();
+          ESP_LOGI("boot", "Sistema inicializado. Power State: %d", id(power_state));
+      # Eliminadas las llamadas a climate.set_target_temperature_range aquí,
+      # ya que no son acciones válidas para este componente en este contexto.
+      # Los límites por defecto se configuran directamente en el componente climate.
+
+esp32:
+  board: esp32dev # Placa ESP32 genérica (ej. ESP32 DevKitC)
+  framework:
+    type: esp-idf # Framework ESP-IDF, más robusto para proyectos complejos y multi-tarea
+    # version: 4.4 # Puedes especificar una versión concreta si lo necesitas, ej. 4.4 o latest
+
+# =====================================================================
+# === CONECTIVIDAD Y COMUNICACIONES ===================================
+# =====================================================================
+# Habilita el log para ver qué está pasando en el dispositivo.
+logger:
+  level: INFO # Nivel de log por defecto. Cambia a DEBUG para más detalles durante la depuración.
+  # baud_rate: 0 # Deshabilita el log por UART si no lo necesitas para ahorrar recursos en producción.
+
+# Habilita la API para la integración nativa con Home Assistant.
+api:
+  # Es CRUCIAL proteger tu API. Asegúrate de que esta clave sea única y segura.
+  encryption:
+    key: "Y2sXmgcq3V4+NNm8LyhHqJ3ok3uN8L15yElHmS5Sssc="
+
+# Permite actualizaciones de firmware por WiFi (Over-The-Air).
+ota:
+  - platform: esphome
+    password: !secret ota_password # Usa un secreto para la contraseña OTA por seguridad.
+
+# Portal cautivo: si el ESP no se conecta al WiFi, crea un punto de
+# acceso para que puedas configurarlo desde el navegador.
+captive_portal:
+
+# Configuración para conectar a tu servidor MQTT.
+mqtt:
+  broker: 192.168.0.200
+  # Las credenciales se leen desde tu archivo 'secrets.yaml'.
+  username: !secret usermqtt
+  password: !secret passmqtt
+
+# Configuración de la red WiFi.
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid # Red principal
+      password: !secret wifi_password
+      priority: 10 # Mayor prioridad para la red principal
+    - ssid: !secret wifi_ssid2 # Red secundaria/de respaldo
+      password: !secret wifi_password2
+      priority: 5 # Menor prioridad para la red secundaria
+  
+  # Asignación de la IP estática definida en las sustituciones para una conexión estable.
+  manual_ip:
+    static_ip: ${static_ip_address}
+    gateway: ${gateway_ip_address}
+    subnet: ${subnet_mask}
+  
+  # Punto de acceso de respaldo (AP).
+  # Se activará si no puede conectarse a ninguna de las redes WiFi configuradas.
+  ap:
+    ssid: "ESP TermoWesen AP"
+    password: !secret wifi_password # Usa un secreto para la contraseña del AP.
+  
+  # Eventos para monitorear la conexión WiFi y proporcionar feedback.
+  on_disconnect:
+    then:
+      - lambda: |-
+          ESP_LOGW("wifi", "WiFi Desconectado. Intentando reconectar...");
+          // Puedes añadir acciones aquí, como un parpadeo de LED o un sonido del buzzer.
+  on_connect:
+    then:
+      - lambda: |-
+          ESP_LOGI("wifi", "WiFi Conectado!");
+          // Opcional: Sonido de confirmación de conexión exitosa.
+      - light.toggle: buzzer # Pequeño feedback sonoro al Conectarse
+      - delay: 200ms # Duración del sonido
+      - light.turn_off: buzzer # Asegura que el buzzer se apague
+      
+
+# =====================================================================
+# === COMPONENTES (Buses de comunicación y Salidas) ===================
+# =====================================================================
+# --- Bus I2C ---
+# Preparado para la pantalla OLED (SSD1306).
+i2c:
+  sda: ${PinI2C_SDA}
+  scl: ${PinI2C_SCL}
+  scan: true # Al arrancar, buscará dispositivos I2C y mostrará sus direcciones en el log.
+
+# --- Bus One-Wire para el sensor Dallas ---
+# Este componente gestiona el bus donde se conectan los sensores DS18B20. Recuerda poner una resistencia de 4k7 a 3.3v en este pin tambien
+one_wire:
+  - platform: gpio
+    pin:
+      number: ${PinDallas}
+
+# --- Salidas (Relés y LEDs) ---
+output:
+  - platform: gpio
+    pin: ${PinRele1}
+    id: rele_1_output # ID para la salida GPIO del Relé 1
+    inverted: false # Ajustar a 'true' si tu relé se activa con LOW
+  - platform: gpio
+    pin: ${PinRele2}
+    id: rele_2_output # ID para la salida GPIO del Relé 2
+    inverted: false 
+  - platform: gpio
+    pin: ${PinRele3}
+    id: rele_3_output # ID para la salida GPIO del Relé 3 (TURBO)
+    inverted: false 
+  - platform: gpio
+    pin: ${PinBuzzer}
+    id: buzzer_gpio_output # ID para la salida GPIO del Buzzer
+    inverted: false # Buzzer conectado con un NPN (Se activa con HIGH)
+  - platform: gpio
+    pin: ${PinLed1}
+    id: led_t1_output # ID para la salida GPIO del LED del Tanque 1
+    inverted: true
+  - platform: gpio
+    pin: ${PinLed2}
+    id: led_t2_output # ID para la salida GPIO del LED del Tanque 2
+    inverted: true
+  - platform: gpio
+    pin: ${PinLedTurbo}
+    id: led_turbo_output # ID para la salida GPIO del LED del Modo TURBO
+    inverted: true
+
+# --- Componentes Switch y Light para control más sencillo ---
+# Convertimos las salidas GPIO en componentes 'switch' y 'light' para
+# un control más abstracto y una mejor integración con Home Assistant.
+switch:
+  - platform: output
+    output: rele_1_output
+    id: rele_1
+    name: "${friendlyname} - Relé Tanque 1"
+  - platform: output
+    output: rele_2_output
+    id: rele_2
+    name: "${friendlyname} - Relé Tanque 2"
+  - platform: output
+    output: rele_3_output
+    id: rele_3
+    name: "${friendlyname} - Relé Turbo"
+
+light:
+  - platform: binary
+    output: buzzer_gpio_output # Vinculado a la salida GPIO del buzzer
+    id: buzzer # ID para el componente 'light' del buzzer
+    name: "${friendlyname} - Buzzer"
+  - platform: binary
+    output: led_t1_output
+    id: led_t1
+    name: "${friendlyname} - LED Tanque 1"
+  - platform: binary
+    output: led_t2_output
+    id: led_t2
+    name: "${friendlyname} - LED Tanque 2"
+  - platform: binary
+    output: led_turbo_output
+    id: led_turbo
+    name: "${friendlyname} - LED Turbo"
+
+# =====================================================================
+# === SENSORES ========================================================
+# =====================================================================
+sensor:
+  # --- 1. Sensores de Temperatura Dallas (DS18B20) ---
+  # Es crucial que las direcciones sean las correctas para cada sensor.
+  # Si no estás seguro, puedes eliminar las líneas 'address:' y ESPHome las detectará
+  # automáticamente al primer arranque, mostrándolas en el log.
+  - platform: dallas_temp
+    #address: 0x0F3C01B55693B228 # Dirección del sensor Dallas para Tanque 1
+    name: "${friendlyname} - Temp Tanque 1"
+    id: temp1
+    unit_of_measurement: "°C"
+    update_interval: 15s # Intervalo de actualización para un control preciso
+    accuracy_decimals: 1 # Muestra un decimal en la lectura
+
+  - platform: dallas_temp
+    #address: 0xE63C01D075A77528 # Dirección del sensor Dallas para Tanque 2
+    name: "${friendlyname} - Temp Tanque 2"
+    id: temp2
+    unit_of_measurement: "°C"
+    update_interval: 15s
+    accuracy_decimals: 1
+    
+  # --- 2. Sensor de la Señal WiFi ---
+  # Útil para diagnosticar problemas de conexión y monitorear la calidad de la señal.
+  - platform: wifi_signal
+    name: "${friendlyname} - Señal WiFi"
+    id: wifi_signal_db # ID para referenciarlo en la pantalla y Home Assistant
+    unit_of_measurement: "dBm" # Unidad de medida estándar para la señal WiFi
+    update_interval: 60s # Actualiza cada minuto para no sobrecargar el sistema
+
+# =====================================================================
+# === SENSORES BINARIOS (Botones y Sensores de Estado) ================
+# =====================================================================
+binary_sensor:
+  # --- Botón ON/OFF/Ciclo (PinBtnOnOff) ---
+  - platform: gpio
+    pin: 
+      number: ${PinBtnOnOff}
+      mode: INPUT_PULLUP # Activa la resistencia pull-up interna (si el botón va de pin a GND)
+      inverted: true # Si el botón conecta a GND al pulsar, el pin se va a LOW. Invertimos para que 'ON' sea pulsado.
+    name: "${friendlyname} - Botón ON/OFF"
+    on_press:
+      then:
+        - lambda: |-
+            id(power_state) = (id(power_state) + 1) % 4; // Cicla entre 0, 1, 2, 3
+            ESP_LOGD("button", "Botón ON/OFF presionado. Power State: %d", id(power_state));
+            id(rele_led_manager).execute(); // Llama al script para actualizar relés y LEDs
+        - light.toggle: buzzer # Pequeño feedback sonoro al pulsar
+        - delay: 100ms # Duración del sonido
+        - light.turn_off: buzzer # Asegura que el buzzer se apague
+
+  # --- Botón Modo (PinBtnMode) ---
+  - platform: gpio
+    pin: 
+      number: ${PinBtnMode}
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "${friendlyname} - Botón Modo"
+    on_press:
+      then:
+        - lambda: |-
+            id(active_thermo) = (id(active_thermo) == 1) ? 2 : 1; // Cambia entre Termo1 y Termo2
+            ESP_LOGD("button", "Botón Modo presionado. Active Thermo: %d", id(active_thermo));
+        - light.toggle: buzzer
+        - delay: 100ms
+        - light.turn_off: buzzer
+
+  # --- Botón Temperatura (PinBtnTmp) ---
+  - platform: gpio
+    pin: 
+      number: ${PinBtnTmp}
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "${friendlyname} - Botón Temp"
+    on_press:
+      then:
+        - lambda: |-
+            if (id(active_thermo) == 1) {
+              id(target_t1) += 5.0; // Incrementa en 5 grados
+              if (id(target_t1) > id(temp_max)) id(target_t1) = id(temp_min); // Cicla si excede el máximo
+              ESP_LOGD("button", "Botón Temp presionado. Target T1: %.1f", id(target_t1));
+              id(thermo1).target_temperature = id(target_t1); // Actualiza el target del termostato en ESPHome
+            } else {
+              id(target_t2) += 5.0;
+              if (id(target_t2) > id(temp_max)) id(target_t2) = id(temp_min);
+              ESP_LOGD("button", "Botón Temp presionado. Target T2: %.1f", id(target_t2));
+              id(thermo2).target_temperature = id(target_t2); // Actualiza el target del termostato en ESPHome
+            }
+        - light.toggle: buzzer
+        - delay: 100ms # Duración del sonido
+        - light.turn_off: buzzer # Asegura que el buzzer se apague
+
+  # --- Sensor de Inclinación (PinOrientacion) ---
+  - platform: gpio
+    pin: 
+      number: ${PinOrientacion} 
+      mode: INPUT_PULLUP # O INPUT si es un sensor de 3 hilos auto-alimentado (ej. SW-420)
+      inverted: false # Ajusta según la lógica de tu sensor (HIGH o LOW al activarse)
+    name: "${friendlyname} - Sensor Orientación"
+    # Filtros para evitar "rebotes" o lecturas falsas por vibraciones
+    filters:
+      - delayed_on: 1s # El estado debe permanecer ON durante 1 segundo para ser detectado
+      - delayed_off: 1s # El estado debe permanecer OFF durante 1 segundo para ser detectado
+    on_press: # Cuando el sensor detecta una inclinación (ej. pin se activa, asumiendo "horizontal")
+      then:
+        - lambda: |-
+            id(display_rotated) = true; // Establece la bandera de rotación a true
+            ESP_LOGI("orientation", "Sensor de inclinación: Horizontal (Display Rotado)");
+            // Puedes añadir otras acciones, como una notificación a Home Assistant.
+        - light.turn_on: buzzer # Buzzer sonando brevemente para indicar cambio
+        - delay: 200ms
+        - light.turn_off: buzzer
+    on_release: # Cuando el sensor vuelve a la posición normal (ej. "vertical")
+      then:
+        - lambda: |-
+            id(display_rotated) = false; // Establece la bandera de rotación a false
+            ESP_LOGI("orientation", "Sensor de inclinación: Vertical (Display Normal)");
+        - light.turn_on: buzzer # Buzzer sonando brevemente para indicar cambio
+        - delay: 200ms
+        - light.turn_off: buzzer
+
+# =====================================================================
+# === AUTOMATIZACIONES Y LÓGICA DE CONTROL ============================
+# =====================================================================
+
+# --- Script para gestionar relés y LEDs ---
+# Este script es el "cerebro" central que controla los relés y LEDs
+# basándose en el valor de 'power_state' y el estado de los termostatos.
+# Se puede llamar explícitamente desde los botones y al arranque del ESP.
+script:
+  - id: rele_led_manager # ID descriptivo para este script
+    then:
+      - lambda: |-
+          // Control de los relés y LEDs según el 'power_state' global y la lógica de los termostatos.
+          // La lógica aquí es crucial para evitar conflictos y asegurar el comportamiento deseado.
+
+          // Primero, forzamos los modos de los termostatos según el power_state general.
+          // Esto es importante para que Home Assistant refleje el estado correcto y los termostatos
+          // no intenten calentar cuando el sistema general está apagado o en un modo específico.
+          if (id(power_state) == 0) { // ALL OFF
+            id(thermo1).mode = climate::CLIMATE_MODE_OFF;
+            id(thermo2).mode = climate::CLIMATE_MODE_OFF;
+          } else if (id(power_state) == 1) { // T1 ON
+            id(thermo1).mode = climate::CLIMATE_MODE_HEAT; // Permitir que T1 controle
+            id(thermo2).mode = climate::CLIMATE_MODE_OFF; // Forzar apagado de T2
+          } else if (id(power_state) == 2 || id(power_state) == 3) { // T1 + T2 ON o T1 + T2 + TURBO
+            id(thermo1).mode = climate::CLIMATE_MODE_HEAT;
+            id(thermo2).mode = climate::CLIMATE_MODE_HEAT;
+          }
+
+          // Control de Relé 1 (Tanque 1) y LED 1
+          // Se activa si el power_state permite T1 Y el termostato T1 está en modo HEAT.
+          if ((id(power_state) == 1 || id(power_state) == 2 || id(power_state) == 3) &&
+              id(thermo1).mode == climate::CLIMATE_MODE_HEAT) {
+            id(rele_1).turn_on();
+            id(led_t1).turn_on();
+          } else {
+            id(rele_1).turn_off();
+            id(led_t1).turn_off();
+          }
+
+          // Control de Relé 2 (Tanque 2) y LED 2
+          // Se activa si el power_state permite T2 Y el termostato T2 está en modo HEAT.
+          if ((id(power_state) == 2 || id(power_state) == 3) &&
+              id(thermo2).mode == climate::CLIMATE_MODE_HEAT) {
+            id(rele_2).turn_on();
+            id(led_t2).turn_on();
+          } else {
+            id(rele_2).turn_off();
+            id(led_t2).turn_off();
+          }
+
+          // Control de Relé 3 (TURBO) y LED Turbo
+          // Se activa SOLO si el power_state es T1+T2+TURBO (3) Y el Tanque 1 está calentando.
+          if (id(power_state) == 3 && id(rele_1).state) { // id(rele_1).state verifica si Rele1 está ON
+            id(rele_3).turn_on();
+            id(led_turbo).turn_on();
+          } else {
+            id(rele_3).turn_off();
+            id(led_turbo).turn_off();
+          }
+
+          ESP_LOGD("rele_manager", "Relés y LEDs actualizados para Power State: %d", id(power_state));
+
+
+# --- Lógica de control principal (Intervalo de actualización) ---
+# Este 'interval' se encarga de monitorear periódicamente el estado
+# de los termostatos y forzar la re-evaluación de la lógica de relés/LEDs.
+interval:
+  - interval: 5s # Un intervalo razonable para el control de temperatura y feedback visual
+    id: main_control_loop
+    then:
+      - lambda: |-
+          // Forzar la publicación del estado de los termostatos para que Home Assistant
+          // siempre tenga la información más reciente sobre su modo y temperatura.
+          id(thermo1).publish_state();
+          id(thermo2).publish_state();
+          
+          // Volver a ejecutar el script de gestión de relés y LEDs.
+          // Esto asegura que cualquier cambio en el modo del termostato (HEAT/IDLE)
+          // dispare la lógica de encendido/apagado de relés.
+          id(rele_led_manager).execute();
+
+          // Mostrar estados en el log para depuración (muy útil)
+          ESP_LOGD("control", "--- Bucle de Control ---");
+          ESP_LOGD("control", "Power State: %d, Active Thermo (Display): %d", id(power_state), id(active_thermo));
+          ESP_LOGD("control", "Temp1: %.1fC (Target: %.1fC, Mode: %s)",
+                   id(temp1).state, id(target_t1), id(thermo1).mode_to_string(id(thermo1).mode).c_str());
+          ESP_LOGD("control", "Temp2: %.1fC (Target: %.1fC, Mode: %s)",
+                   id(temp2).state, id(target_t2), id(thermo2).mode_to_string(id(thermo2).mode).c_str());
+          ESP_LOGD("control", "Rele1: %s, Rele2: %s, Rele3: %s",
+                   id(rele_1).state ? "ON" : "OFF",
+                   id(rele_2).state ? "ON" : "OFF",
+                   id(rele_3).state ? "ON" : "OFF");
+          ESP_LOGD("control", "LED1: %s, LED2: %s, LEDTurbo: %s",
+                   id(led_t1).state ? "ON" : "OFF",
+                   id(led_t2).state ? "ON" : "OFF",
+                   id(led_turbo).state ? "ON" : "OFF");
+
+# =====================================================================
+# === CLIMATE (TERMOSTATOS) ===========================================
+# =====================================================================
+# Los termostatos son entidades de Home Assistant que gestionan el control de temperatura.
+# Su `heat_action` e `idle_action` *no deben* controlar directamente los relés
+# cuando tienes una lógica centralizada como tu `power_state`.
+# Su función es indicar su "deseo" de calentar o estar inactivos.
+# La lógica en el script `rele_led_manager` es la que leerá este "deseo"
+# y el 'power_state' global para activar los relés físicos.
+climate:
+  - platform: thermostat
+    name: "${friendlyname} - Tanque 1"
+    id: thermo1
+    default_preset: Normal
+    sensor: temp1 # El sensor de temperatura que utiliza este termostato
+    min_idle_time: 10s # Tiempo mínimo que debe estar inactivo antes de volver a encenderse
+    min_heating_off_time: 10s # TIEMPO MÍNIMO QUE EL CALENTADOR DEBE ESTAR APAGADO (seguridad)
+    min_heating_run_time: 10s # TIEMPO MÍNIMO QUE EL CALENTADOR DEBE ESTAR ENCENDIDO (seguridad)
+    
+    # Se eliminan default_target_temperature_low/high.
+    # Se usan presets para definir rangos de temperatura por defecto.
+    preset:
+      - name: "Normal"
+        default_target_temperature_low: 40.0  
+      - name: "Muy Caliente"
+        default_target_temperature_low: 60.0
+    
+    # Cuando el termostato necesite calor:
+    heat_action:
+      - script.execute: rele_led_manager # Forzar re-evaluación de relés/LEDs
+      - lambda: |-
+          ESP_LOGI("thermostat", "Termostato 1 Solicita Calentar");
+    # Cuando el termostato no necesite calor (temperatura alcanzada):
+    idle_action:
+      - script.execute: rele_led_manager # Forzar re-evaluación de relés/LEDs
+      - lambda: |-
+          ESP_LOGI("thermostat", "Termostato 1 modo IDLE");
+
+  - platform: thermostat
+    name: "${friendlyname} - Tanque 2"
+    id: thermo2
+    default_preset: Normal
+    sensor: temp2
+    min_idle_time: 10s
+    min_heating_off_time: 10s # TIEMPO MÍNIMO QUE EL CALENTADOR DEBE ESTAR APAGADO (seguridad)
+    min_heating_run_time: 10s # TIEMPO MÍNIMO QUE EL CALENTADOR DEBE ESTAR ENCENDIDO (seguridad)
+    
+    # Se eliminan default_target_temperature_low/high.
+    # Se usan presets para definir rangos de temperatura por defecto.
+    preset:
+      - name: "Normal"
+        default_target_temperature_low: 40.0
+      - name: "Muy Caliente"
+        default_target_temperature_low: 60.0    
+
+    heat_action:
+      - script.execute: rele_led_manager
+      - lambda: |-
+          ESP_LOGI("thermostat", "Termostato 2 Solicita Calentar");
+    idle_action:
+      - script.execute: rele_led_manager
+      - lambda: |-
+          ESP_LOGI("thermostat", "Termostato 2 modo IDLE");
+
+
+
+
+
+
+
+# =====================================================================
+# === INTERFAZ DE USUARIO (Pantalla OLED) =============================
+# =====================================================================
+
+font:
+  # Asegúrate de que los archivos de fuentes estén en la carpeta 'fonts'
+  # dentro de tu directorio de configuración de ESPHome.
+  - file: "fonts/arial.ttf"
+    id: arial15
+    size: 15
+    glyphs: '!"%()+,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz'
+
+  - file: "fonts/arial.ttf"
+    id: arial20
+    size: 20
+    glyphs: '!"%()+,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz'
+
+  - file: 'fonts/materialdesignicons-webfont.ttf'
+    id: icon_font_15
+    size: 15
+    glyphs: [
+      '󰠜', # mdi-door-open
+      '󰠚', # mdi-door
+      '󰔏', # mdi-thermometer
+      '󰸁', # mdi-thermometer-alert
+      '󰸂', # mdi-thermometer-chevron-down
+      '󰸃', # mdi-thermometer-chevron-up
+      '󱀚', # mdi-car-turbocharger
+      '󰁪', # mdi-autorenew
+      '󰜗', # mdi-snowflake
+      '󰼩', # mdi-snowflake-alert
+      '󱆲', # mdi-fridge-alert-outline
+      '󰊏'] # mdi-fridge-outline
+  - file: 'fonts/materialdesignicons-webfont.ttf'
+    id: icon_font_20
+    size: 20
+    glyphs: [
+      '󰔏', # mdi-thermometer
+      '󰸁', # mdi-thermometer-alert
+      '󰸂', # mdi-thermometer-chevron-down
+      '󰸃', # mdi-thermometer-chevron-up
+      '󱀚', # mdi-car-turbocharger
+      '󰁪', # mdi-autorenew
+      '󰜗', # mdi-snowflake
+      '󰼩', # mdi-snowflake-alert
+      '󱆲', # mdi-fridge-alert-outline
+      '󰊏'] # mdi-fridge-outline
+
+  - file: 'fonts/materialdesignicons-webfont.ttf' 
+    id: wifi_font
+    size: 15
+    glyphs: [
+      # Wifi
+      '󰖪', # mdi-wifi-off
+      '󰖩', # mdi-wifi
+      '󰤟', # mdi-wifi-strength-1
+      '󰤢', # mdi-wifi-strength-2
+      '󰤥', # mdi-wifi-strength-3
+      '󰤨', # mdi-wifi-strength-4
+      '󰤫', # mdi-wifi-strength-alert-outline
+      ]
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C # Dirección I2C de tu pantalla OLED (comúnmente 0x3C o 0x3D)
+    update_interval: 2s # Frecuencia de actualización de la pantalla
+    # Control de rotación del display basado en el sensor de inclinación
+    lambda: |-
+      if (id(display_rotated)) {
+        it.set_rotation(DISPLAY_ROTATION_90_DEGREES); // Rota la pantalla 90 grados
+      } else {
+        it.set_rotation(DISPLAY_ROTATION_0_DEGREES); // Orientación normal
+      }
+
+      // it.text_align(TextAlign::TOP_LEFT); // Esta línea se elimina, no es necesaria y causaba error
+      
+      // --- Línea 1: Estado de Relés ---
+      // Muestra si cada relé está ON u OFF.
+      it.printf(0, 0, id(arial15), "R1:%s R2:%s R3:%s", // Usando arial15
+                id(rele_1).state ? "ON" : "OFF", 
+                id(rele_2).state ? "ON" : "OFF", 
+                id(rele_3).state ? "ON" : "OFF");
+
+      // --- Línea 2: Temperatura Actual del Termostato Activo ---
+      // Muestra la temperatura del tanque seleccionado por 'active_thermo'.
+      float actual_temp = (id(active_thermo)==1) ? id(temp1).state : id(temp2).state;
+      if (std::isnan(actual_temp)) { // Manejo de errores si la lectura del sensor falla
+          it.printf(0, 20, id(arial15), "Temp: N/A C"); // Usando arial15
+      } else {
+          it.printf(0, 20, id(arial15), "Temp: %.1f C", actual_temp); // Usando arial15
+      }
+
+      // --- Línea 3: Temperatura Objetivo del Termostato Activo ---
+      // Muestra la temperatura objetivo del tanque seleccionado.
+      float target_temp = (id(active_thermo)==1) ? id(target_t1) : id(target_t2);
+      it.printf(0, 40, id(arial15), "Obj: %.0f C", target_temp); // Usando arial15
+
+      // --- Línea 4: Modo de Operación y Señal WiFi ---
+      // Muestra el modo de operación actual (OFF, T1, T1+T2, TURBO).
+      const char* mode_str; // Declarar mode_str aquí
+      switch (id(power_state)) {
+        case 0: mode_str = "OFF"; break;
+        case 1: mode_str = "T1"; break;
+        case 2: mode_str = "T1+T2"; break;
+        case 3: mode_str = "TURBO"; break;
+        default: mode_str = "ERR"; break;
+      }
+      it.printf(0, 60, id(arial15), "Mode: %s", mode_str); // Usando arial15
+
+      // Indicador de señal WiFi (en la esquina superior derecha del display)
+      int signal = id(wifi_signal_db).state; // Usa el ID correcto del sensor de WiFi
+      if (signal > -60) {
+        it.print(100,0,id(wifi_font),"󰤨"); // mdi-wifi-strength-4 (fuerte)
+      } else if (signal > -70) {
+        it.print(100,0,id(wifi_font),"󰤢"); // mdi-wifi-strength-2 (media)
+      } else if (signal > -80) { // Añadimos un rango para fuerza 1
+        it.print(100,0,id(wifi_font),"󰤟"); // mdi-wifi-strength-1 (débil)
+      } else {
+        it.print(100,0,id(wifi_font),"󰖪"); // mdi-wifi-off (muy débil/desconectado)
+      }
+
+# =====================================================================
+# === SERVICIOS PARA HOME ASSISTANT ===================================
+# =====================================================================
+# Estos componentes exponen funcionalidades y estados a Home Assistant,
+# permitiendo un control y monitoreo completo desde la interfaz de HA.
+
+# --- Selector para el Power State (Modo de Operación) ---
+# Un componente 'select' es ideal para controlar un estado cíclico con nombres amigables.
+select:
+  - platform: template
+    name: "${friendlyname} - Modo de Operación"
+    id: ha_power_mode_select
+    options: # Las opciones que se mostrarán en Home Assistant
+      - "APAGADO"
+      - "TANQUE 1"
+      - "TANQUE 1 + 2"
+      - "TANQUE 1 + 2 + TURBO"
+    # Lógica para obtener el valor actual del select desde 'power_state'
+    lambda: |-
+      switch (id(power_state)) {
+        case 0: return {"APAGADO"};
+        case 1: return {"TANQUE 1"};
+        case 2: return {"TANQUE 1 + 2"};
+        case 3: return {"TANQUE 1 + 2 + TURBO"};
+        default: return {"APAGADO"}; // Valor por defecto si hay un estado inesperado
+      }
+    # Lógica para establecer el 'power_state' cuando se cambia desde Home Assistant
+    set_action:
+      - lambda: |-
+          if (x == "APAGADO") {
+            id(power_state) = 0;
+          } else if (x == "TANQUE 1") {
+            id(power_state) = 1;
+          } else if (x == "TANQUE 1 + 2") {
+            id(power_state) = 2;
+          } else if (x == "TANQUE 1 + 2 + TURBO") {
+            id(power_state) = 3;
+          }
+          id(rele_led_manager).execute(); // Forzar la actualización de relés y LEDs
+
+# --- Entidades Number para las Temperaturas Objetivo ---
+# Permiten ajustar los valores de temperatura objetivo desde Home Assistant.
+number:
+  - platform: template
+    name: "${friendlyname} - Target T1"
+    id: ha_target_t1
+    # min_value y max_value deben ser valores estáticos aquí.
+    min_value: 25.0 # Usamos el valor inicial de temp_min
+    max_value: 60.0 # Usamos el valor inicial de temp_max
+    step: 1.0 # Pasos de 1 grado
+    mode: SLIDER # Permite introducir el valor directamente en HA o usar sliders BOX o SLIDER
+    lambda: 'return id(target_t1);' # Obtiene el valor actual del global
+    set_action:
+      - lambda: |-
+          id(target_t1) = x; // Actualiza el global con el valor de HA
+          id(thermo1).target_temperature = id(target_t1); // Actualiza el termostato de ESPHome
+          ESP_LOGD("HA_control", "Target T1 cambiado a %.1f desde HA", x);
+
+  - platform: template
+    name: "${friendlyname} - Target T2"
+    id: ha_target_t2
+    # min_value y max_value deben ser valores estáticos aquí.
+    min_value: 25.0 # Usamos el valor inicial de temp_min
+    max_value: 60.0 # Usamos el valor inicial de temp_max
+    step: 1.0
+    mode: SLIDER
+    lambda: 'return id(target_t2);' # Obtiene el valor actual del global
+    set_action:
+      - lambda: |-
+          id(target_t2) = x;
+          id(thermo2).target_temperature = id(target_t2);
+          ESP_LOGD("HA_control", "Target T2 cambiado a %.1f desde HA", x);
+
+# --- Sensor de Texto para el Termostato Activo en Display ---
+# Muestra qué termostato está actualmente seleccionado para visualización/ajuste en la pantalla.
+text_sensor:
+  - platform: template
+    name: "${friendlyname} - Termostato Activo Display"
+    id: active_thermo_display_text
+    update_interval: 5s # Actualiza cada 5 segundos
+    lambda: |-
+      if (id(active_thermo) == 1) {
+        return {"Tanque 1"};
+      } else {
+        return {"Tanque 2"};
+      }
