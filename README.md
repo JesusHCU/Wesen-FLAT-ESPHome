@@ -130,7 +130,10 @@ El corazón del proyecto es el archivo de configuración YAML. Puedes encontrar 
 
 Una vez que compiles y subas este código a tu ESP32, Home Assistant lo detectará automáticamente. Al añadirlo, se crearán las siguientes entidades para un control total desde tu panel de control.
 
-![Panel de Control en Home Assistant](Termo%20Inox%20–%20Home%20Assistant.jpg)
+<img   
+  src="https://github.com/JesusHCU/Wesen-FLAT-ESPHome/blob/main/Images/Termo%20Inox%20%E2%80%93%20Home%20Assistant.jpg" 
+  alt="Panel de Control en Home Assistant" 
+  width="20%" height="auto">
 
 ### Entidades Creadas
 
