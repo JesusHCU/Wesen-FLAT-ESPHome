@@ -1,250 +1,778 @@
+# =====================================================================
+# === SUSTITUCIONES (VARIABLES GLOBALES) ==============================
+# =====================================================================
+# Define aquí valores que usarás en varias partes del código.
+# Facilita hacer cambios en un solo lugar y mejora la legibilidad.
 substitutions:
-  name: "termo-inox"
-  friendlyname: "Termo Inox"
+  # --- Nombres del dispositivo ---
+  devicename: "termo-inox"      # Nombre único del dispositivo en la red
+  friendlyname: "TermoInox"    # Nombre amigable para Home Assistant
 
-  PinRele1: GPIO22
-  PinRele2: GPIO21
-  PinRele3: GPIO19
+  # --- Asignación de Pines ESP32 ---
+  # Es una buena práctica definir los pines aquí para fácil modificación.
+  PinRele1: GPIO22              # Relé para el Tanque 1
+  PinRele2: GPIO21              # Relé para el Tanque 2
+  PinRele3: GPIO19              # Relé para el modo TURBO (Calentador adicional)
 
-  PinDallas: GPIO4
+  PinDallas: GPIO4              # Pin para el bus OneWire (sensores DS18B20)
 
-  PinBtnOnOff: GPIO32
-  PinBtnPower: GPIO33
-  PinBtnTemp: GPIO25
+  PinBtnOnOff: GPIO25          # Botón principal: Encendido / Ciclo de modos
+  PinBtnMode: GPIO33           # Botón de selección: Cambia entre Termostato 1 y Termostato 2 en la pantalla
+  PinBtnTmp: GPIO32            # Botón de ajuste: Sube la temperatura objetivo
 
-  PinLed_SINGLE_POWER: GPIO26
-  PinLed_DOUBLE_POWER: GPIO27
-  PinLed_Verde: GPIO14
+  PinOrientacion: GPIO17        # Sensor de Inclinación (para rotar el display)
+  PinLed1: GPIO14               # LED indicador: Tanque 1 activo (calentando)
+  PinLed2: GPIO26               # LED indicador: Tanque 2 activo (calentando)
+  PinLedTurbo: GPIO27           # LED indicador: Modo TURBO activo
 
-  PinI2C_SDA: GPIO18
-  PinI2C_SCL: GPIO23
+  PinI2C_SCL: GPIO23            # Pin SCL para el bus I2C (pantalla OLED)
+  PinI2C_SDA: GPIO18            # Pin SDA para el bus I2C (pantalla OLED)
 
-  PinBuzzer: GPIO15
+  PinBuzzer: GPIO16             # Salida para el buzzer (feedback sonoro)
 
+  # --- Configuración de Red ---
+  # La IP estática del dispositivo para una conexión fiable.
   static_ip_address: "192.168.0.186"
   gateway_ip_address: "192.168.0.1"
-  subnet_mask: "255.255.252.0"
+  subnet_mask: "255.255.252.0" # Asegúrate de que esta subred sea correcta para tu red.
 
+  # Temperaturas max y min
+  temperatura_min: 20.0
+  temperatura_max: 60.0
+
+# =====================================================================
+# === VARIABLES GLOBALES (estados persistentes) =======================
+# =====================================================================
+# 'globals' se usa para variables que deben mantener su estado
+# incluso después de un reinicio del ESP. Son cruciales para la persistencia.
 globals:
-  - id: termo_on
-    type: bool
+  - id: power_state
+    type: int   # 0 = OFF, 1 = ON (Si esta apagado o encendido)
+    restore_value: yes # Mantiene el último valor conocido tras un reinicio del ESP
+    initial_value: '0' # Valor inicial si no hay valor restaurado (arranque inicial)
+
+  - id: active_mode
+    type: int   # 1=T1 ON, 2=T1+T2 ON, 3=T1+T2+TURBO
     restore_value: yes
-    initial_value: 'false'
-  - id: modo_power
-    type: int  # 0 = SINGLE, 1 = DOUBLE
+    initial_value: '1' 
+
+  - id: temp_min
+    type: float
     restore_value: yes
+    initial_value: '20.0' # Límite inferior para la temperatura objetivo
+  - id: temp_max
+    type: float
+    restore_value: yes
+    initial_value: '60.0' # Límite superior para la temperatura objetivo
+
+  - id: target_t1
+    type: float
+    restore_value: yes    
+    initial_value: '45.0' # Temperatura objetivo inicial para Tanque 1
+  - id: target_t2
+    type: float
+    restore_value: yes
+    initial_value: '50.0' # Temperatura objetivo inicial para Tanque 2
+
+  - id: display_timer
+    type: unsigned long
+    restore_value: no
     initial_value: '0'
-    
-  - id: temperatura_objetivo
-    type: float
-    restore_value: yes
-    initial_value: '45.0'
-  - id: temperatura_objetivo_2
-    type: float
-    restore_value: yes
-    initial_value: '50.0'
-  
-  - id: temperatura_minima
-    type: float
-    restore_value: yes
-    initial_value: '25.0'
-  - id: temperatura_maxima
-    type: float
-    restore_value: yes
-    initial_value: '70.0'
 
+
+# =====================================================================
+# === CONFIGURACIÓN BASE DEL ESP ======================================
+# =====================================================================
 esphome:
-  name: ${name}
-  platform: ESP32
-  board: esp32dev
+  name: ${devicename}         # Usa la sustitución 'devicename'
+  friendly_name: ${friendlyname} # Usa la sustitución 'friendlyname'
+  # Con name_add_mac_suffix en 'false', el nombre será exactamente "termo-inox".
+  name_add_mac_suffix: false
 
+  # Evento que se ejecuta al arrancar el ESP. Es crucial para inicializar estados
+  # y asegurar que el hardware se sincronice con las variables globales restauradas.
+  on_boot:
+    priority: 600 # Asegura que se ejecute después de que todos los componentes estén inicializados
+    then:
+      - script.execute: rele_led_manager # Llama al script para inicializar relés y LEDs
+      - lambda: |-
+          ESP_LOGI("boot", "Sistema inicializado. Power State: %d", id(power_state));
+
+esp32:
+  board: esp32dev # Placa ESP32 genérica (ej. ESP32 DevKitC)
+  framework:
+    type: esp-idf # Framework ESP-IDF, más robusto para proyectos complejos y multi-tarea
+    # version: 4.4 # Puedes especificar una versión concreta si lo necesitas, ej. 4.4 o latest
+
+# =====================================================================
+# === CONECTIVIDAD Y COMUNICACIONES ===================================
+# =====================================================================
+# Habilita el log para ver qué está pasando en el dispositivo.
+logger:
+  level: INFO # INFO # Nivel de log por defecto. Cambia a DEBUG para más detalles durante la depuración.
+  # baud_rate: 0 # Deshabilita el log por UART si no lo necesitas para ahorrar recursos en producción.
+
+# Habilita la API para la integración nativa con Home Assistant.
+api:
+  # Es CRUCIAL proteger tu API. Asegúrate de que esta clave sea única y segura.
+  actions:
+    - action: rtttl_play
+      variables:
+        song_str: string
+      then:
+        - rtttl.play:
+            rtttl: !lambda 'return song_str;'
+  encryption:
+    key: "YOUR_KEY"
+
+
+
+# Permite actualizaciones de firmware por WiFi (Over-The-Air).
+ota:
+  - platform: esphome
+    password: !secret ota_password # Usa un secreto para la contraseña OTA por seguridad.
+
+# Portal cautivo: si el ESP no se conecta al WiFi, crea un punto de
+# acceso para que puedas configurarlo desde el navegador.
+captive_portal:
+
+# Configuración para conectar a tu servidor MQTT.
+#mqtt:
+#  broker: 192.168.0.200
+#  # Las credenciales se leen desde tu archivo 'secrets.yaml'.
+#  username: !secret usermqtt
+#  password: !secret passmqtt
+
+# Configuración de la red WiFi.
 wifi:
   networks:
-    - ssid: !secret wifi_ssid
+    - ssid: !secret wifi_ssid # Red principal
       password: !secret wifi_password
-    - ssid: !secret wifi_ssid2
+      priority: 10 # Mayor prioridad para la red principal
+    - ssid: !secret wifi_ssid2 # Red secundaria/de respaldo
       password: !secret wifi_password2
+      priority: 5 # Menor prioridad para la red secundaria
+  
+  # Asignación de la IP estática definida en las sustituciones para una conexión estable.
   manual_ip:
     static_ip: ${static_ip_address}
     gateway: ${gateway_ip_address}
     subnet: ${subnet_mask}
+  
+  # Punto de acceso de respaldo (AP).
+  # Se activará si no puede conectarse a ninguna de las redes WiFi configuradas.
   ap:
-    ssid: "ESP $(name) AP"
-    password: !secret wifi_password
+    ssid: "ESP TermoWesen AP"
+    password: !secret wifi_password # Usa un secreto para la contraseña del AP.
+  
+  # Eventos para monitorear la conexión WiFi y proporcionar feedback.
+  on_disconnect:
+    then:
+      - lambda: |-
+          ESP_LOGW("wifi", "WiFi Desconectado. Intentando reconectar...");
+          // Puedes añadir acciones aquí, como un parpadeo de LED o un sonido del buzzer.
+  on_connect:
+    then:
+      - lambda: |-
+          ESP_LOGI("wifi", "WiFi Conectado!");
+      - rtttl.play: 'mario_corto:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g,8p'
 
-captive_portal:
-logger:
-api:
-  encryption:
-    key: "je4O5QAvum5ZGhkYjHPF7i/kJkORBhJXU2/8PF93ArRF"
-ota:
-  password: !secret ota_password
 
-mqtt:
-  broker: 192.168.0.200
-  username: !secret usermqtt
-  password: !secret passmqtt
 
+# =====================================================================
+# === COMPONENTES (Buses de comunicación y Salidas) ===================
+# =====================================================================
+# --- Bus I2C ---
+# Preparado para la pantalla OLED (SSD1306).
 i2c:
   sda: ${PinI2C_SDA}
   scl: ${PinI2C_SCL}
-  scan: true
+  scan: true # Al arrancar, buscará dispositivos I2C y mostrará sus direcciones en el log.
 
+# --- Bus One-Wire para el sensor Dallas ---
+# Este componente gestiona el bus donde se conectan los sensores DS18B20.
 one_wire:
   - platform: gpio
-    pin:
-      number: ${PinDallas}
+    pin: ${PinDallas}
+
+# --- PARA EL BUZZER ----------
+rtttl:
+  output: buzzer
+  id: rtttl_buzzer
+  gain: 50%
+  on_finished_playback:
+    - logger.log: 'Song ended!'
 
 output:
-  - platform: gpio
-    pin: ${PinRele1}
-    id: rele1
-    inverted: false
-  - platform: gpio
-    pin: ${PinRele2}
-    id: rele2
-    inverted: false
-  - platform: gpio
-    pin: ${PinRele3}
-    id: rele3
-    inverted: false
-  - platform: gpio
-    pin: ${PinBuzzer}
-    id: buzzer
-    inverted: false
-  - platform: gpio
-    pin: ${PinLed_Verde}
-    id: led_verde
-    inverted: false
-  - platform: gpio
-    pin: ${PinLed_SINGLE_POWER}
-    id: led_single
-    inverted: false
-  - platform: gpio
-    pin: ${PinLed_DOUBLE_POWER}
-    id: led_double
-    inverted: false
+  - platform: ledc
+    pin: ${PinBuzzer} # Vinculado a la salida GPIO del buzzer
+    id: buzzer # ID para el componente 'light' del buzzer
+#http://arcadetones.emuunlim.com/arcade.htm
+#one_short:d=4,o=5,b=100:16e6
+#two_short:d=4,o=5,b=100:16e6,16e6
+#long:d=1,o=5,b=100:e6
+# mario_corto:d=4,o=5,b=100:16e6,16e6,32p,8e6,16c6,8e6,8g6,8p,8g,8p
 
+# --- Salidas (Relés y LEDs) ---
+# ¡IMPORTANTE! Verifica la lógica 'inverted' de tus relés y LEDs.
+# Muchos módulos relé son "activos bajos" (se activan con un LOW en el pin)
+# y necesitarían 'inverted: true'. Los LEDs suelen encenderse con HIGH
+# (inverted: false), pero depende de cómo estén cableados (ánodo/cátodo común).
+# This is an output component and will not be visible from the frontend.
+
+# --- Componentes Switch ---
+switch:
+  - platform: gpio
+    name: ${friendlyname}-Relé T1
+    pin: ${PinRele1}
+    icon: "mdi:heating-coil"
+    id: rele_1
+#    internal: true
+  - platform: gpio
+    name: ${friendlyname}-Relé T2
+    icon: "mdi:heating-coil"
+    pin: ${PinRele2}
+    id: rele_2
+#    internal: true
+  - platform: gpio
+    name: ${friendlyname}-Relé Turbo
+    icon: "mdi:heating-coil"
+    pin: ${PinRele3}
+    id: rele_3
+#    internal: true
+
+  - platform: gpio
+    name: ${friendlyname}-LED R1
+    pin: ${PinLed1}
+    icon: "mdi:led-outline"
+    inverted: true
+    id: led_t1
+  - platform: gpio
+    name: ${friendlyname}-LED R2
+    pin: ${PinLed2}
+    icon: "mdi:led-outline"
+    inverted: true
+    id: led_t2
+  - platform: gpio
+    name: ${friendlyname}-LED RT
+    pin: ${PinLedTurbo} # Usamos la sustitución para el pin del LED Turbo
+    icon: "mdi:led-outline"
+    inverted: true
+    id: led_turbo
+
+# =====================================================================
+# === SENSORES ========================================================
+# =====================================================================
 sensor:
+  # --- 1. Sensores de Temperatura Dallas (DS18B20) ---
+  # Es crucial que las direcciones sean las correctas para cada sensor.
+  # Si no estás seguro, puedes eliminar las líneas 'address:' y ESPHome las detectará
+  # automáticamente al primer arranque, mostrándolas en el log.
   - platform: dallas_temp
-    address: 0x0f3c01b55693b228
-    name: "${friendlyname} - Temp1"
+    #address: 0x0F3C01B55693B228 # Dirección del sensor Dallas para Tanque 1
+    name: ${friendlyname}-TempT1"
     id: temp1
     unit_of_measurement: "°C"
-    accuracy_decimals: 1
-    update_interval: 5s
+    update_interval: 15s # Intervalo de actualización para un control preciso
+    accuracy_decimals: 1 # Muestra un decimal en la lectura
+
   - platform: dallas_temp
-    address: 0xe63c01d075a77528
-    name: "${friendlyname} - Temp2"
+    #address: 0xE63C01D075A77528 # Dirección del sensor Dallas para Tanque 2
+    name: ${friendlyname}-TempT2
     id: temp2
     unit_of_measurement: "°C"
+    update_interval: 15s
     accuracy_decimals: 1
-    update_interval: 5s
+    
+  # --- 2. Sensor de la Señal WiFi ---
+  # Útil para diagnosticar problemas de conexión y monitorear la calidad de la señal.
   - platform: wifi_signal
-    name: "${friendlyname} - Señal WiFi"
-    id: wifi_signal
-    update_interval: 60s
+    name: ${friendlyname}-Señal WiFi
+    id: wifi_signal_db # ID para referenciarlo en la pantalla y Home Assistant
+    unit_of_measurement: "dBm" # Unidad de medida estándar para la señal WiFi
+    update_interval: 60s # Actualiza cada minuto para no sobrecargar el sistema
 
+# =====================================================================
+# === SENSORES BINARIOS (Botones y Sensores de Estado) ================
+# =====================================================================
 binary_sensor:
+  # --- Botón ON/OFF/Ciclo (PinBtnOnOff) ---
   - platform: gpio
-    pin: ${PinBtnOnOff}
-    name: "${friendlyname} - Boton ON/OFF"
-    on_press:
-      then:
-        - lambda: 'id(termo_on) = !id(termo_on);'
-  - platform: gpio
-    pin: ${PinBtnPower}
-    name: "${friendlyname} - Boton Power Mode"
-    on_press:
-      then:
-        - lambda: 'id(modo_power) = (id(modo_power) == 0) ? 1 : 0;'
-  - platform: gpio
-    pin: ${PinBtnTemp}
-    name: "${friendlyname} - Boton Temperatura"
+    pin: 
+      number: ${PinBtnOnOff}
+      mode: INPUT_PULLUP # Activa la resistencia pull-up interna (si el botón va de pin a GND)
+      inverted: true # Si el botón conecta a GND al pulsar, el pin se va a LOW. Invertimos para que 'ON' sea pulsado.
+    name: ${friendlyname}-Btn ON/OFF
+    icon: "mdi:power"
     on_press:
       then:
         - lambda: |-
-            id(temperatura_objetivo) += 5.0;
-            if (id(temperatura_objetivo) > temperatura_maxima) {
-              id(temperatura_objetivo) = temperatura_minima;
+            // Si el display esta apagado, lo encendemos
+            if (!id(oled_display).is_on()) {
+              id(display_timer) = millis();
+              id(oled_display).turn_on();
+              ESP_LOGD("button", "Un botón se presionó. Display encendido");
+            } else {
+            
+            //Realizamos la funcion del boton
+              id(power_state) = (id(power_state) == 1) ? 0 : 1; // Cambia entre ON y OFF
+              ESP_LOGD("button", "Botón ON/OFF presionado. Power State: %d", id(power_state));
+              id(rele_led_manager).execute(); // Llama al script para actualizar relés y LEDs
             }
 
-interval:
-  - interval: 5s
+        - rtttl.play: 'one_short_e:d=4,o=5,b=100:16e6'
+
+
+  # --- Botón Modo (PinBtnMode) ---
+  - platform: gpio
+    pin: 
+      number: ${PinBtnMode}
+      mode: INPUT_PULLUP
+      inverted: true
+    name: ${friendlyname}-Btn Modo
+    icon: "mdi:auto-mode"
+    on_press:
+      then:
+        - lambda: |-
+            // Si el display esta apagado, lo encendemos
+            if (!id(oled_display).is_on()) {
+              id(display_timer) = millis();
+              id(oled_display).turn_on();
+              ESP_LOGD("button", "Un botón se presionó. Display encendido");
+            } else {
+            
+            //Realizamos la funcion del boton
+              id(active_mode) = (id(active_mode) % 3) + 1; // Cicla entre 1, 2, 3
+              ESP_LOGD("button", "Botón Modo presionado. Active Mode: %d", id(active_mode));
+            }
+
+        - rtttl.play: 'one_short_d:d=4,o=5,b=100:16d6'
+
+
+  # --- Botón Temperatura (PinBtnTmp) ---
+  - platform: gpio
+    pin: 
+      number: ${PinBtnTmp}
+      mode: INPUT_PULLUP
+      inverted: true
+    name: ${friendlyname}-BtnTemp
+    icon: "mdi:thermometer-chevron-up"
+    on_press:
+      then:
+        - lambda: |-
+            // Si el display esta apagado, lo encendemos
+            if (!id(oled_display).is_on()) {
+              id(display_timer) = millis();
+              id(oled_display).turn_on();
+              ESP_LOGD("button", "Un botón se presionó. Display encendido");
+            } else {
+            
+            //Realizamos la funcion del boton
+              if (id(active_mode) == 1) {
+                id(target_t1) += 5.0; // Incrementa en 5 grados
+                if (id(target_t1) > id(temp_max)) id(target_t1) = id(temp_min); // Cicla si excede el máximo
+                ESP_LOGD("button", "Botón Temp presionado. Target T1: %.1f", id(target_t1));
+              } else {
+                id(target_t2) += 5.0;
+                if (id(target_t2) > id(temp_max)) id(target_t2) = id(temp_min);
+                ESP_LOGD("button", "Botón Temp presionado. Target T2: %.1f", id(target_t2));
+              }
+              id(rele_led_manager).execute(); // Llama al script para actualizar relés y LEDs con la nueva temperatura
+            }
+        - rtttl.play: 'one_short2:d=4,o=5,b=100:16b6'
+
+
+ 
+# =====================================================================
+# === AUTOMATIZACIONES Y LÓGICA DE CONTROL ============================
+# =====================================================================
+
+# --- Script para gestionar relés y LEDs ---
+# Este script es el "cerebro" central que controla los relés y LEDs
+# basándose en el valor de 'power_state' y el estado de los termostatos.
+# Se puede llamar explícitamente desde los botones y al arranque del ESP.
+script:
+  - id: rele_led_manager # ID descriptivo para este script
     then:
       - lambda: |-
-          // LEDs
-          id(led_verde).turn_on(id(termo_on));
-          id(led_single).turn_on(id(termo_on) && id(modo_power) == 0);
-          id(led_double).turn_on(id(termo_on) && id(modo_power) == 1);
+          // --- Lógica para el Tanque 1 (Rele1) ---
+          bool target_met_t1 = (id(temp1).state >= id(target_t1));
+          bool needs_heat_t1 = (id(temp1).state < id(target_t1) - 1.0); // Hysteresis: encender 1 grado por debajo del objetivo
+          
+          // Solo permitir que el tanque 1 opere si power_state es 1
+          if (id(power_state) == 1){
+              id(ha_power_onoff).publish_state("ON");
+          
+              // Solo permitir que el tanque 1 opere si active_mode es 1, 2, 3
+              bool tank1_allowed_to_heat = (id(active_mode) == 1 || id(active_mode) == 2 || id(active_mode) == 3);
 
-          // Termostato y relés
-          if (id(termo_on)) {
-            if (id(modo_power) == 0) {
-              id(rele1).turn_on(id(temp1).state < id(temperatura_objetivo) && id(temp1).state < id(temperatura_maxima));
-              id(rele2).turn_on(id(temp2).state < id(temperatura_objetivo_2) && id(temp2).state < id(temperatura_maxima));
-              id(rele3).turn_off();
-            } else {
-              id(rele1).turn_on(id(temp1).state < id(temperatura_objetivo) && id(temp1).state < id(temperatura_maxima));
-              id(rele3).turn_on(id(temp1).state < id(temperatura_objetivo) && id(temp1).state < id(temperatura_maxima));
-              id(rele2).turn_off();
-            }
+              if (tank1_allowed_to_heat && needs_heat_t1 && !target_met_t1) { 
+                id(rele_1).turn_on();
+                id(ha_power_onoff).publish_state("ON");
+                id(led_t1).turn_on();
+                ESP_LOGD("thermostat_logic", "Tanque 1 ON: Necesita calor.");
+              } else {
+                // Rele 1 apagado
+                id(rele_1).turn_off();
+                id(led_t1).turn_off();
+                // Rele 3 apagado
+                id(rele_3).turn_off();
+                id(led_turbo).turn_off();
+                ESP_LOGD("thermostat_logic", "Tanque 1 OFF: Objetivo alcanzado o Power State no permite calentamiento.");
+              }
+
+              // --- Lógica para el Tanque 2 (Rele2) ---
+              bool target_met_t2 = (id(temp2).state >= id(target_t2));
+              bool needs_heat_t2 = (id(temp2).state < id(target_t2) - 1.0); // Hysteresis
+
+          // Solo permitir que el tanque 2 opere si active_mode es 2, 3
+              bool tank2_allowed_to_heat = (id(active_mode) == 2 || id(active_mode) == 3);
+              
+              if (tank2_allowed_to_heat && needs_heat_t2 && !target_met_t2) {
+                id(rele_2).turn_on();
+                id(led_t2).turn_on();
+                ESP_LOGD("thermostat_logic", "Tanque 2 ON: Necesita calor.");
+              } else {
+                // Rele 2 apagado
+                id(rele_2).turn_off();
+                id(led_t2).turn_off();
+                ESP_LOGD("thermostat_logic", "Tanque 2 OFF: Objetivo alcanzado o Power State no permite calentamiento.");
+              }
+
+              // --- Lógica para Relé 3 (TURBO) ---
+              // El relé TURBO se activa SOLO si el active_mode es 3 (T1+T2+TURBO)
+              // Y el Tanque 1 está actualmente calentando (rele_1 está ON).
+              if (id(active_mode) == 3 && id(rele_1).state) {
+                id(rele_3).turn_on();
+                id(led_turbo).turn_on();
+              } else {
+                id(rele_3).turn_off();
+                id(led_turbo).turn_off();
+              }
           } else {
-            id(rele1).turn_off();
-            id(rele2).turn_off();
-            id(rele3).turn_off();
+                id(ha_power_onoff).publish_state("OFF");
+                ESP_LOGD("rele_manager", "Relés y LEDs APAGADOS, Power State: %d", id(power_state));
+                // Rele 1 apagado
+                id(rele_1).turn_off();
+                id(led_t1).turn_off();
+                
+                // Rele 2 apagado
+                id(rele_2).turn_off();
+                id(led_t2).turn_off();
+                
+                // Rele 3 apagado
+                id(rele_3).turn_off();
+                id(led_turbo).turn_off();
+                
           }
 
+          ESP_LOGD("rele_manager", "Relés y LEDs actualizados para Power State: %d", id(power_state));
+
+
+# --- Lógica de control principal (Intervalo de actualización) ---
+# Este 'interval' se encarga de monitorear periódicamente el estado
+# de los termostatos y forzar la re-evaluación de la lógica de relés/LEDs.
+interval:
+  - interval: 5s # Un intervalo razonable para el control de temperatura y feedback visual
+    id: main_control_loop
+    then:
+      - lambda: |-
+          // Volver a ejecutar el script de gestión de relés y LEDs.
+          // Esto asegura que cualquier cambio en las temperaturas o power_state
+          // dispare la lógica de encendido/apagado de relés.
+          
+          id(rele_led_manager).execute();
+
+          // Mostrar estados en el log para depuración (muy útil)
+          ESP_LOGD("control", "--- Bucle de Control ---");
+          ESP_LOGD("control", "Power State: %d, -- Active Mode: %d", id(power_state), id(active_mode));
+          ESP_LOGD("control", "Temp1: %.1fC (Target: %.1fC, Rele1 State: %s)",
+                   id(temp1).state,
+                   id(target_t1),
+                   id(rele_1).state ? "ON" : "OFF");
+                   
+          ESP_LOGD("control", "Temp2: %.1fC (Target: %.1fC, Rele2 State: %s)",
+                   id(temp2).state,
+                   id(target_t2),
+                   id(rele_2).state ? "ON" : "OFF");
+                   
+          ESP_LOGD("control", "Rele1: %s, Rele2: %s, Rele3: %s",
+                   id(rele_1).state ? "ON" : "OFF",
+                   id(rele_2).state ? "ON" : "OFF",
+                   id(rele_3).state ? "ON" : "OFF");
+                   
+          ESP_LOGD("control", "LED1: %s, LED2: %s, LEDTurbo: %s",
+                   id(led_t1).state ? "ON" : "OFF",
+                   id(led_t2).state ? "ON" : "OFF",
+                   id(led_turbo).state ? "ON" : "OFF");
+
+          if ((millis() - id(display_timer) > 120000) && id(oled_display).is_on()) {
+                      id(oled_display).turn_off();
+                      ESP_LOGD("TIMER", "Han pasado 60seg y apago el display");
+                    }
+          const char* mode_str;
+          switch (id(active_mode)) {
+            case 1: mode_str = "TANQUE 1"; break;
+            case 2: mode_str = "TANQUE 1 + 2"; break;
+            case 3: mode_str = "TANQUE 1 + 2 + TURBO"; break;
+            default: mode_str = "TANQUE 1"; break;
+          }
+          id(ha_power_mode_select).publish_state(mode_str);
+
+
+# =====================================================================
+# === SERVICIOS PARA HOME ASSISTANT ===================================
+# =====================================================================
+# Estos componentes exponen funcionalidades y estados a Home Assistant,
+# permitiendo un control y monitoreo completo desde la interfaz de HA.
+
+# --- Selector para el Power State (Modo de Operación) ---
+# Un componente 'select' es ideal para controlar un estado cíclico con nombres amigables.
+select:
+  - platform: template
+    name: ${friendlyname}-ON/OFF
+    id: ha_power_onoff
+    icon: mdi:power-standby
+#   update_interval: 1s
+    options: # Las opciones que se mostrarán en Home Assistant
+      - "ON"
+      - "OFF"      
+    # Lógica para obtener el valor actual del select desde 'power_state'
+    lambda: |-
+      if (id(power_state) == 0) {
+        return {"OFF"};
+      } else {
+        return {"ON"};
+      }
+      
+    # Lógica para establecer el 'power_state' cuando se cambia desde Home Assistant
+    set_action:
+      - lambda: |-
+          if (x == "ON") {
+            id(power_state) = 1;
+            id(ha_power_onoff).publish_state("ON");            
+          } else{
+            id(power_state) = 0;
+            id(ha_power_onoff).publish_state("OFF");             
+          }
+          ESP_LOGI("HA_control", "Estado ON/OFF cambiado a %s desde HA", x.c_str());  
+          id(rele_led_manager).execute(); // Forzar la actualización de relés y LEDs
+
+  - platform: template
+    name: ${friendlyname}-Power Modo
+    id: ha_power_mode_select
+#   update_interval: 1s
+    options: # Las opciones que se mostrarán en Home Assistant
+      - "TANQUE 1"
+      - "TANQUE 1 + 2"
+      - "TANQUE 1 + 2 + TURBO"
+    # Lógica para obtener el valor actual del select desde 'active_mode'
+    lambda: |-
+        //ESP_LOGI("HA_control", "Mode Select - Lambda cambiado a %s desde HA", id(active_mode)); 
+        switch (id(active_mode)) {
+          case 1: return {"TANQUE 1"};
+          case 2: return {"TANQUE 1 + 2"};
+          case 3: return {"TANQUE 1 + 2 + TURBO"};
+          default: return {"TANQUE 1"}; 
+        }
+      
+    # Lógica para establecer el active_mode cuando se cambia el active_mode desde Home Assistant
+    set_action:
+      - lambda: |-
+          if (x == "TANQUE 1") {
+            id(active_mode) = 1;
+            //id(ha_power_mode_select).publish_state("TANQUE 1");
+          } else if (x == "TANQUE 1 + 2") {
+            id(active_mode) = 2;
+            //id(ha_power_mode_select).publish_state("TANQUE 1 + 2"); 
+          } else if (x == "TANQUE 1 + 2 + TURBO") {
+            id(active_mode) = 3;
+            //id(ha_power_mode_select).publish_state("TANQUE 1 + 2 + TURBO"); 
+          }
+          //ESP_LOGI("HA_control", "Mode Select Set_Action - cambiado a %s desde HA", x.c_str());   
+          //id(rele_led_manager).execute(); // Forzar la actualización de relés y LEDs
+# --- Entidades Number para las Temperaturas Objetivo ---
+# Permiten ajustar los valores de temperatura objetivo desde Home Assistant.
 number:
   - platform: template
-    name: "${friendlyname} - Temp. Objetivo T1"
-    id: temp_obj
-    min_value: temperatura_minima
-    max_value: temperatura_maxima
-    step: 5.0
-    lambda: 'return id(temperatura_objetivo);'
-    set_action:
-      lambda: 'id(temperatura_objetivo) = x;'
-    update_interval: 10s
-  - platform: template
-    name: "${friendlyname} - Temp. Objetivo T2"
-    id: temp_obj2
-    min_value: temperatura_minima
-    max_value: temperatura_maxima
-    step: 5.0
-    lambda: 'return id(temperatura_objetivo_2);'
-    set_action:
-      lambda: 'id(temperatura_objetivo_2) = x;'
-    update_interval: 10s
-  - platform: template
-    name: "${friendlyname} - Temp Máxima"
-    id: temp_max
-    min_value: temperatura_minima
-    max_value: temperatura_maxima
-    step: 1.0
-    lambda: 'return id(temperatura_maxima);'
-    set_action:
-      lambda: 'id(temperatura_maxima) = x;'
-    update_interval: 10s
+    name: ${friendlyname}-Objetivo T1
+    id: ha_target_t1
+    icon: "mdi:coolant-temperature"
+    device_class: temperature
+    min_value: ${temperatura_min} # Usamos el valor de Substitutions
+    max_value: ${temperatura_max} # Usamos el valor de Substitutions
+    step: 1.0 # Pasos de 1 grado
+    mode: BOX # Cambiado a modo SLIDER
 
-font:
-  - file: "fonts/OpenSans-Regular.ttf"
-    id: font1
-    size: 18
+    lambda: 'return id(target_t1);' # Obtiene el valor actual del global
+    set_action:
+      - lambda: |-
+          id(target_t1) = x; // Actualiza el global con el valor de HA
+          id(rele_led_manager).execute(); // Llama al script para actualizar relés y LEDs
+          ESP_LOGD("HA_control", "Target T1 cambiado a %.1f desde HA", x);
+     # Lógica para obtener el valor actual del select desde 'power_state'
+
+
+  - platform: template
+    name: ${friendlyname}-Objetivo T2
+    id: ha_target_t2
+    icon: "mdi:coolant-temperature"
+    device_class: temperature
+    min_value: ${temperatura_min} # Usamos el valor de Substitutions
+    max_value: ${temperatura_max} # Usamos el valor de Substitutions
+    step: 1.0
+    mode: BOX # Cambiado a modo SLIDER
+    lambda: 'return id(target_t2);' # Obtiene el valor actual del global
+    set_action:
+      - lambda: |-
+          id(target_t2) = x;
+          id(rele_led_manager).execute(); // Llama al script para actualizar relés y LEDs
+          ESP_LOGD("HA_control", "Target T2 cambiado a %.1f desde HA", x);
+
+
+
+# =====================================================================
+# === INTERFAZ DE USUARIO (Pantalla OLED) =============================
+# =====================================================================
+
 
 display:
   - platform: ssd1306_i2c
-    model: "SSD1306 128x64"
-    address: 0x3C
+    model: "SH1106 128x64"
+#   contrast: 70%
+    address: 0x3C # Dirección I2C de tu pantalla OLED (comúnmente 0x3C o 0x3D)
+    update_interval: 2s # Frecuencia de actualización de la pantalla
+    id: oled_display
+    # Control de rotación del display basado en el sensor de inclinación
     lambda: |-
-      it.printf(0, 0, id(font1), "T1: %.1f°C", id(temp1).state);
-      it.printf(0, 20, id(font1), "T2: %.1f°C", id(temp2).state);
-      it.printf(0, 40, id(font1), "OBJ: %.0f°C", id(temperatura_objetivo));
-      int signal = id(wifi_signal).state;
-      if (signal > -60) {
-        it.print(100, 0, id(font1), "📶");
-      } else if (signal > -70) {
-        it.print(100, 0, id(font1), "📶.");
-      } else {
-        it.print(100, 0, id(font1), "📶..");
+      //---------------------------------------------------------------------------
+      // ---            Línea 1: Estado, modo y señal Wifi       ----------------
+      //-------------------------------------------------------------------------
+      int FilaMode = 0;
+      const char* power_str;
+      
+      if (id(power_state) == 1) {
+        power_str = "ON";
+      }else {
+        power_str = "OFF";
       }
+
+      const char* mode_str;
+      switch (id(active_mode)) {
+        case 1: mode_str = "T1"; break;
+        case 2: mode_str = "T1+T2"; break;
+        case 3: mode_str = "T1+T2+Turbo"; break;
+        default: mode_str = "ERR"; break;
+      }
+            
+      it.printf(5, FilaMode, id(arial10), "%s -  %s", power_str, mode_str);
+
+      // Indicador de señal WiFi (en la esquina superior derecha del display)
+      int signal = id(wifi_signal_db).state; 
+      if (signal > -60) {
+        it.print(110,0,id(wifi_font),"󰤨"); // mdi-wifi-strength-4 (fuerte)
+      } else if (signal > -70) {
+        it.print(110,0,id(wifi_font),"󰤢"); // mdi-wifi-strength-2 (media)
+      } else if (signal > -80) { 
+        it.print(110,0,id(wifi_font),"󰤟"); // mdi-wifi-strength-1 (débil)
+      } else {
+        it.print(110,0,id(wifi_font),"󰖪"); // mdi-wifi-off (muy débil/desconectado)
+      }
+
+      //---------------------------------------------------------------------------
+      // ---              Línea 2: Temperatura Tanque 1        --------------------
+      //---------------------------------------------------------------------------
+      int columna_Objetivos = 80 ;
+      int fila1 = 17;
+      int fila2 = 40;
+
+      it.printf(0, fila1, id(icon_font_20), "󱃂");           //Iconos - Temp1
+      
+      if (std::isnan(id(temp1).state)) { 
+          it.printf(10, fila1, id(arial20), " Null");                      // Manejo de errores si la lectura del sensor 1 falla
+      } else {
+          it.printf(10, fila1, id(arial20), " %.1f°C", id(temp1).state);
+      }
+      it.printf(columna_Objetivos, fila1+5, id(arial15), "-%.0f°C", id(target_t1));
+
+      //---------------------------------------------------------------------------
+      // ---              Línea 3: Temperatura Tanque 2        --------------------
+      //---------------------------------------------------------------------------
+      it.printf(0, fila2, id(icon_font_20), "󱃂");           //Iconos - Temp2
+
+      if (std::isnan(id(temp2).state)) { 
+          it.printf(10, fila2, id(arial20), " Null");                     // Manejo de errores si la lectura del sensor 2 falla
+      } else {
+          it.printf(10, fila2, id(arial20), " %.1f°C", id(temp2).state);
+      }
+       it.printf(columna_Objetivos, fila2+5, id(arial15), "-%.0f°C", id(target_t2));
+
+      //---------------------------------------------------------------------------
+
+
+font:
+  # Asegúrate de que los archivos de fuentes estén en la carpeta 'fonts'
+  # dentro de tu directorio de configuración de ESPHome.
+  - file: "fonts/arial.ttf"
+    id: arial10
+    size: 10
+    glyphs: '!"%()+,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz'
+
+  - file: "fonts/arial.ttf"
+    id: arial15
+    size: 15
+    glyphs: '!"%()+,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz'
+
+  - file: "fonts/arial.ttf"
+    id: arial20
+    size: 20
+    glyphs: '!"%()+,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz'
+
+  - file: "fonts/arial.ttf"
+    id: arial25
+    size: 25
+    glyphs: '!"%()+,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz'
+
+  - file: 'fonts/materialdesignicons-webfont.ttf'
+    id: icon_font_15
+    size: 15
+    glyphs: [
+      '󱃂', # mdi-thermometer
+      '󰸁', # mdi-thermometer-alert
+      '󰸂', # mdi-thermometer-chevron-down
+      '󰸃', # mdi-thermometer-chevron-up
+      '󱀚', # mdi-car-turbocharger
+      '󰁪', # mdi-autorenew
+      '󰜗', # mdi-snowflake
+      '󰼩', # mdi-snowflake-alert
+      '󱆲', # mdi-fridge-alert-outline
+      '󰊏'] # mdi-fridge-outline
+
+  - file: 'fonts/materialdesignicons-webfont.ttf'
+    id: icon_font_20
+    size: 20
+    glyphs: [
+      '󱃂', # mdi-thermometer
+      '󰸁', # mdi-thermometer-alert
+      '󰸂', # mdi-thermometer-chevron-down
+      '󰸃', # mdi-thermometer-chevron-up
+      '󱀚', # mdi-car-turbocharger
+      '󰁪', # mdi-autorenew
+      '󰜗', # mdi-snowflake
+      '󰼩', # mdi-snowflake-alert
+      '󱆲', # mdi-fridge-alert-outline
+      '󰊏'] # mdi-fridge-outline
+
+  - file: 'fonts/materialdesignicons-webfont.ttf'
+    id: wifi_font
+    size: 15
+    glyphs: [
+      # Wifi
+      '󰖪', # mdi-wifi-off
+      '󰖩', # mdi-wifi
+      '󰤟', # mdi-wifi-strength-1
+      '󰤢', # mdi-wifi-strength-2
+      '󰤥', # mdi-wifi-strength-3
+      '󰤨', # mdi-wifi-strength-4
+      '󰤫', # mdi-wifi-strength-alert-outline
+      ]
